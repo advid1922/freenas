@@ -6,6 +6,7 @@ from middlewared.service import SystemServiceService, private
 
 class OpenVPN:
     CIPHERS = {}
+    DIGESTS = {}
 
     @staticmethod
     def ciphers():
@@ -27,6 +28,25 @@ class OpenVPN:
 
         return OpenVPN.CIPHERS
 
+    @staticmethod
+    def digests():
+        if not OpenVPN.DIGESTS:
+            proc = subprocess.Popen(
+                ['openvpn', '--show-digests'],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            stdout, stderr = proc.communicate()
+            if not proc.returncode:
+                OpenVPN.DIGESTS = {
+                    v.split(' ')[0].strip(): ' '.join(map(str.strip, v.split(' ')[1:]))
+                    for v in
+                    filter(
+                        lambda v: v and v.endswith('bit digest size'),
+                        stdout.decode('utf8').split('\n')
+                    )
+                }
+
+        return OpenVPN.DIGESTS
 
 
 class OpenVPNServerService(SystemServiceService):
@@ -48,7 +68,7 @@ class OpenVPNServerService(SystemServiceService):
             Int('root_ca', null=True),
             IPAddr('server', network=True),
             Str('additional_parameters'),
-            Str('authentication_algorithm', enum=[], null=True),
+            Str('authentication_algorithm', enum=OpenVPN.digests(), null=True),
             Str('device_type', enum=['TUN', 'TAP']),
             Str('protocol', enum=['UDP', 'TCP']),
             Str('tls_crypt_auth', null=True),
@@ -78,7 +98,7 @@ class OpenVPNClientService(SystemServiceService):
             Int('root_ca', null=True),
             Int('remote_port'),
             Str('additional_parameters'),
-            Str('authentication_algorithm', enum=[], null=True),
+            Str('authentication_algorithm', enum=OpenVPN.digests(), null=True),
             Str('device_type', enum=['TUN', 'TAP']),
             Str('protocol', enum=['UDP', 'TCP']),
             Str('remote'),
