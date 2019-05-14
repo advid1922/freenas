@@ -161,6 +161,20 @@ class OpenVPNClientService(SystemServiceService):
         service_model = 'openvpnclient'
         service_verb = 'restart'
 
+    @private
+    async def validate(self, data, schema_name):
+        verrors = await OpenVPN.common_validation(
+            self.middleware, data, schema_name, 'client'
+        )
+
+        if not data.get('remote'):
+            verrors.add(
+                f'{schema_name}.remote',
+                'This field is required.'
+            )
+
+        verrors.check()
+
     @accepts(
         Dict(
             'openvpn_client_update',
@@ -183,4 +197,13 @@ class OpenVPNClientService(SystemServiceService):
         )
     )
     async def do_update(self, data):
+        old_config = await self.config()
+        config = old_config.copy()
+
+        config.update(data)
+
+        await self.validate(config, 'openvpn_client_update')
+
+        await self._update_service(old_config, config)
+
         return await self.config()
