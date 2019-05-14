@@ -2,7 +2,7 @@ import subprocess
 
 from middlewared.service import SystemServiceService, private
 from middlewared.schema import accepts, Bool, Dict, Int, IPAddr, List, Str, ValidationErrors
-from middlewared.validators import Port
+from middlewared.validators import Port, Range
 
 
 class OpenVPN:
@@ -50,7 +50,7 @@ class OpenVPN:
         return OpenVPN.DIGESTS
 
     @staticmethod
-    async def common_validation(self, middleware, data, schema, mode):
+    async def common_validation(middleware, data, schema, mode):
         verrors = ValidationErrors()
 
         # TODO: Let's add checks for cert extensions as well please
@@ -107,17 +107,28 @@ class OpenVPNServerService(SystemServiceService):
         service_model = 'openvpnserver'
         service_verb = 'restart'
 
+    @private
+    async def validate(self, data, schema_name):
+        # Before validating, if `null` is provided for `root_ca`/`server_certificate`,
+        # let's setup the PKI first.
+
+        verrors = await OpenVPN.common_validation(
+            self.middleware, data, schema_name, 'server'
+        )
+
+        verrors.check()
+
     @accepts(
         Dict(
             'openvpn_server_update',
             Bool('nobind'),
             Bool('tls_crypt_auth_enabled'),
-            Int('netmask'),
+            Int('netmask', validators=[Range(min=0, max=32)]),
             Int('server_certificate', null=True),
             Int('compression', null=True),
             Int('port', validators=[Port()]),
             Int('root_ca', null=True),
-            IPAddr('server', network=True),
+            IPAddr('server'),
             Str('additional_parameters'),
             Str('authentication_algorithm', enum=OpenVPN.digests(), null=True),
             Str('cipher', null=True, enum=OpenVPN.ciphers()),
@@ -130,6 +141,15 @@ class OpenVPNServerService(SystemServiceService):
         )
     )
     async def do_update(self, data):
+        old_config = await self.config()
+        config = old_config.copy()
+
+        config.update(data)
+
+        await self.validate(config, 'openvpn_server_update')
+
+        await self._update_service(old_config, config)
+
         return await self.config()
 
 
