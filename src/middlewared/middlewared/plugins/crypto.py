@@ -199,6 +199,23 @@ class CryptoKeyService(Service):
 
         return CryptoKeyService.EXTENSIONS
 
+    def add_extensions(self, cert, extensions_data, key):
+        # By default we add the following
+        cert = cert.public_key(
+            key.public_key()
+        ).add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False
+        )
+
+        for extension in filter(lambda v: bool(v[1]), extensions_data.items()):
+            klass = getattr(x509.extensions, extension[0])
+            cert = cert.add_extension(
+                klass(*self.convert_extension_data(extension)),
+                extension[1].get('extension_critical') or False
+            )
+
+        return cert
+
     def convert_extension_data(self, extension):
         params = ()
         if extension[0] == 'BasicConstraints':
@@ -209,7 +226,7 @@ class CryptoKeyService(Service):
                 usages.append(getattr(x509.oid.ExtendedKeyUsageOID, ext_usage))
             params = (usages,)
         elif extension[0] == 'KeyUsage':
-            params = (extension[1].get(k) for k in self.extensions()['KeyUsage'])
+            params = (extension[1].get(k, False) for k in self.extensions()['KeyUsage'])
         return params
 
     @accepts(
@@ -485,6 +502,7 @@ class CryptoKeyService(Service):
             'csr': True
         })
 
+        csr = self.add_extensions(csr, data.get('cert_extensions'), key)
         csr = csr.sign(key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend())
 
         return (
@@ -515,6 +533,7 @@ class CryptoKeyService(Service):
             Str('email', validators=[Email()], required=True),
             Str('digest_algorithm', enum=['SHA1', 'SHA224', 'SHA256', 'SHA384', 'SHA512']),
             List('san', items=[Str('san')], null=True),
+            Ref('cert_extensions'),
             register=True
         )
     )
@@ -548,11 +567,9 @@ class CryptoKeyService(Service):
 
         cert = self.generate_builder(builder_data)
 
-        cert = cert.public_key(
-            key.public_key()
-        ).add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False
-        ).sign(
+        cert = self.add_extensions(cert, data.get('cert_extensions'), key)
+
+        cert = cert.sign(
             ca_key or key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend()
         )
 
@@ -604,18 +621,22 @@ class CryptoKeyService(Service):
 
         cert = self.generate_builder(builder_data)
 
-        cert = cert.add_extension(
-            x509.BasicConstraints(True, 0 if ca_key else None), True
-        ).add_extension(
-            x509.KeyUsage(
-                digital_signature=False, content_commitment=False, key_encipherment=False, data_encipherment=False,
-                key_agreement=False, key_cert_sign=True, crl_sign=True, encipher_only=False, decipher_only=False
-            ), True
-        ).add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False
-        ).public_key(
-            key.public_key()
-        )
+        extension_data = data.get('cert_extensions')
+        if not extension_data.get('KeyUsage'):
+            extension_data['KeyUsage'] = {
+                'key_cert_sign': True,
+                'crl_sign': True,
+                'extension_critical': True
+            }
+
+        if not extension_data.get('BasicConstraints'):
+            extension_data['BasicConstraints'] = {
+                'ca': True,
+                'path_length': 0 if ca_key else None,
+                'extension_critical': True
+            }
+
+        cert = self.add_extensions(cert, data.get('cert_extensions'), key)
 
         cert = cert.sign(ca_key or key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend())
 
@@ -1240,6 +1261,7 @@ class CertificateService(CRUDService):
                 'CERTIFICATE_CREATE_ACME'], required=True),
             Str('digest_algorithm', enum=['SHA1', 'SHA224', 'SHA256', 'SHA384', 'SHA512']),
             List('san', items=[Str('san')]),
+            Ref('cert_extensions'),
             register=True
         )
     )
