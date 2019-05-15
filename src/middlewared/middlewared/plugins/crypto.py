@@ -174,10 +174,17 @@ class CryptoKeyService(Service):
     def extensions():
         if not CryptoKeyService.EXTENSIONS:
             # For now we only support the following extensions
+            # We also support SubjectAlternativeName but as we include that natively if the user provides it
+            # we don't expose it to the end user as an extension making the process for the end user easier to
+            # create a certificate/ca as most wouldn't even want to know what extension is or does.
+            # Apart from this we also add subjectKeyIdentifier automatically
             supported = [
-                'BasicConstraints', 'SubjectKeyIdentifier', 'AuthorityKeyIdentifier',
-                'ExtendedKeyUsage', 'KeyUsage', 'SubjectAlternativeName'
+                'BasicConstraints', 'AuthorityKeyIdentifier',
+                'ExtendedKeyUsage', 'KeyUsage'
             ]
+
+            # TODO: See if we should remove this link - it relates to AuthorityKeyIdentifier
+            # https://www.v13.gr/blog/?p=293
 
             for attr in filter(
                 lambda attr: attr in supported, dir(x509.extensions)
@@ -191,6 +198,80 @@ class CryptoKeyService(Service):
                     CryptoKeyService.EXTENSIONS[attr] = inspect.getfullargspec(attr_obj.__init__).args[1:]
 
         return CryptoKeyService.EXTENSIONS
+
+    def convert_extension_data(self, extension):
+        params = ()
+        if extension[0] == 'BasicConstraints':
+            params = (extension[1].get('ca'), extension[1].get('path_length'))
+        elif extension[0] == 'ExtendedKeyUsage':
+            usages = []
+            for ext_usage in extension[1].get('usages', []):
+                usages.append(getattr(x509.oid.ExtendedKeyUsageOID, ext_usage))
+            params = (usages,)
+        elif extension[0] == 'KeyUsage':
+            params = (extension[1].get(k) for k in self.extensions()['KeyUsage'])
+        return params
+
+    @accepts(
+        Dict(
+            'cert_extensions',
+            Dict(
+                'BasicConstraints',
+                Bool('ca'),
+                Int('path_length', null=True),
+                Bool('extension_critical')
+            ),
+            Dict(
+                'AuthorityKeyIdentifier',
+                Bool('enabled'),
+                Bool('extension_critical')
+            ),
+            Dict(
+                'ExtendedKeyUsage',
+                List(
+                    'usages',
+                    items=[
+                        Str(
+                            'usage', enum=[
+                                i for i in dir(x509.oid.ExtendedKeyUsageOID)
+                                if not i.startswith('__')
+                            ]
+                        )
+                    ]
+                ),
+                Bool('extension_critical')
+            ),
+            Dict(
+                'KeyUsage',
+                Bool('digital_signature'),
+                Bool('content_commitment'),
+                Bool('key_encipherment'),
+                Bool('data_encipherment'),
+                Bool('key_agreement'),
+                Bool('key_cert_sign'),
+                Bool('crl_sign'),
+                Bool('encipher_only'),
+                Bool('decipher_only'),
+                Bool('extension_critical')
+            ),
+            register=True
+        ),
+        Str('schema')
+    )
+    def validate_extensions(self, extensions_data, schema):
+        verrors = ValidationErrors()
+
+        for extension in filter(lambda v: bool(v[1]), extensions_data.items()):
+            klass = getattr(x509.extensions, extension[0])
+            try:
+                klass(*self.convert_extension_data(extension[1]))
+            except Exception as e:
+                verrors.add(
+                    f'{schema}.{extension[0]}',
+                    f'Please provide valid values for {extension[0]}: {e}'
+                )
+
+        return verrors
 
     def validate_certificate_with_key(self, certificate, private_key, schema_name, verrors, passphrase=None):
         if (
