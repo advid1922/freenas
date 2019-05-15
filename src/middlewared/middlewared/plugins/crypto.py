@@ -143,6 +143,11 @@ async def _validate_common_attributes(middleware, data, verrors, schema_name):
                 'RSA-based keys require an entry in this field.'
             )
 
+    if not verrors and data.get('cert_extensions'):
+        verrors.extend(
+            (await middleware.call('cryptokey.validate_extensions', data['cert_extensions'], schema_name))
+        )
+
 
 class CryptoKeyService(Service):
 
@@ -183,9 +188,6 @@ class CryptoKeyService(Service):
                 'ExtendedKeyUsage', 'KeyUsage'
             ]
 
-            # TODO: See if we should remove this link - it relates to AuthorityKeyIdentifier
-            # https://www.v13.gr/blog/?p=293
-
             for attr in filter(
                 lambda attr: attr in supported, dir(x509.extensions)
             ):
@@ -199,7 +201,8 @@ class CryptoKeyService(Service):
 
         return CryptoKeyService.EXTENSIONS
 
-    def add_extensions(self, cert, extensions_data, key):
+    def add_extensions(self, cert, extensions_data, key, issuer=None):
+        # issuer must be a certificate object
         # By default we add the following
         cert = cert.public_key(
             key.public_key()
@@ -207,81 +210,61 @@ class CryptoKeyService(Service):
             x509.SubjectKeyIdentifier.from_public_key(key.public_key()), False
         )
 
-        for extension in filter(lambda v: bool(v[1]), extensions_data.items()):
+        for extension in filter(lambda v: v[1]['enabled'], extensions_data.items()):
             klass = getattr(x509.extensions, extension[0])
             cert = cert.add_extension(
-                klass(*self.convert_extension_data(extension)),
+                klass(*self.get_extension_params(extension, cert, issuer)),
                 extension[1].get('extension_critical') or False
             )
 
         return cert
 
-    def convert_extension_data(self, extension):
-        params = ()
+    def get_extension_params(self, extension, cert=None, issuer=None):
+        params = []
+
         if extension[0] == 'BasicConstraints':
-            params = (extension[1].get('ca'), extension[1].get('path_length'))
+            params = [extension[1].get('ca'), extension[1].get('path_length')]
         elif extension[0] == 'ExtendedKeyUsage':
             usages = []
             for ext_usage in extension[1].get('usages', []):
                 usages.append(getattr(x509.oid.ExtendedKeyUsageOID, ext_usage))
-            params = (usages,)
+            params = [usages]
         elif extension[0] == 'KeyUsage':
-            params = (extension[1].get(k, False) for k in self.extensions()['KeyUsage'])
+            params = [extension[1].get(k, False) for k in self.extensions()['KeyUsage']]
+        elif extension[0] == 'AuthorityKeyIdentifier':
+            params = [
+                x509.SubjectKeyIdentifier.from_public_key(
+                    issuer.public_key() if issuer else cert._public_key
+                ).digest if cert or issuer else None,
+                None, None
+            ]
+
+            if extension[1]['authority_cert_issuer'] and cert:
+                params[1:] = [
+                    [x509.DirectoryName(cert._issuer_name)],
+                    issuer.serial_number if issuer else cert._serial_number
+                ]
+
         return params
 
     @accepts(
-        Dict(
-            'cert_extensions',
-            Dict(
-                'BasicConstraints',
-                Bool('ca'),
-                Int('path_length', null=True),
-                Bool('extension_critical')
-            ),
-            Dict(
-                'AuthorityKeyIdentifier',
-                Bool('enabled'),
-                Bool('extension_critical')
-            ),
-            Dict(
-                'ExtendedKeyUsage',
-                List(
-                    'usages',
-                    items=[
-                        Str(
-                            'usage', enum=[
-                                i for i in dir(x509.oid.ExtendedKeyUsageOID)
-                                if not i.startswith('__')
-                            ]
-                        )
-                    ]
-                ),
-                Bool('extension_critical')
-            ),
-            Dict(
-                'KeyUsage',
-                Bool('digital_signature'),
-                Bool('content_commitment'),
-                Bool('key_encipherment'),
-                Bool('data_encipherment'),
-                Bool('key_agreement'),
-                Bool('key_cert_sign'),
-                Bool('crl_sign'),
-                Bool('encipher_only'),
-                Bool('decipher_only'),
-                Bool('extension_critical')
-            ),
-            register=True
-        ),
+        Ref('cert_extensions'),
         Str('schema')
     )
     def validate_extensions(self, extensions_data, schema):
+        # We do not need to validate some extensions like `AuthorityKeyIdentifier`.
+        # They are generated from the cert/ca's public key contents. So we skip these.
+
+        skip_extension = ['AuthorityKeyIdentifier']
         verrors = ValidationErrors()
 
-        for extension in filter(lambda v: bool(v[1]), extensions_data.items()):
+        for extension in filter(
+            lambda v: v[1]['enabled'] and v[0] not in skip_extension,
+            extensions_data.items()
+        ):
             klass = getattr(x509.extensions, extension[0])
             try:
-                klass(*self.convert_extension_data(extension[1]))
+                klass(*self.get_extension_params(extension))
             except Exception as e:
                 verrors.add(
                     f'{schema}.{extension[0]}',
@@ -502,7 +485,6 @@ class CryptoKeyService(Service):
             'csr': True
         })
 
-        csr = self.add_extensions(csr, data.get('cert_extensions'), key)
         csr = csr.sign(key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend())
 
         return (
@@ -533,7 +515,53 @@ class CryptoKeyService(Service):
             Str('email', validators=[Email()], required=True),
             Str('digest_algorithm', enum=['SHA1', 'SHA224', 'SHA256', 'SHA384', 'SHA512']),
             List('san', items=[Str('san')], null=True),
-            Ref('cert_extensions'),
+            Dict(
+                'cert_extensions',
+                Dict(
+                    'BasicConstraints',
+                    Bool('ca', default=False),
+                    Bool('enabled', default=False),
+                    Int('path_length', null=True, default=None),
+                    Bool('extension_critical', default=False)
+                ),
+                Dict(
+                    'AuthorityKeyIdentifier',
+                    Bool('authority_cert_issuer', default=False),
+                    Bool('enabled', default=False),
+                    Bool('extension_critical', default=False)
+                ),
+                Dict(
+                    'ExtendedKeyUsage',
+                    List(
+                        'usages',
+                        items=[
+                            Str(
+                                'usage', enum=[
+                                    i for i in dir(x509.oid.ExtendedKeyUsageOID)
+                                    if not i.startswith('__')
+                                ]
+                            )
+                        ]
+                    ),
+                    Bool('enabled', default=False),
+                    Bool('extension_critical', default=False)
+                ),
+                Dict(
+                    'KeyUsage',
+                    Bool('enabled', default=False),
+                    Bool('digital_signature', default=False),
+                    Bool('content_commitment', default=False),
+                    Bool('key_encipherment', default=False),
+                    Bool('data_encipherment', default=False),
+                    Bool('key_agreement', default=False),
+                    Bool('key_cert_sign', default=False),
+                    Bool('crl_sign', default=False),
+                    Bool('encipher_only', default=False),
+                    Bool('decipher_only', default=False),
+                    Bool('extension_critical', default=False)
+                ),
+                register=True
+            ),
             register=True
         )
     )
@@ -564,10 +592,13 @@ class CryptoKeyService(Service):
             builder_data['crypto_issuer_name'] = {
                 k: ca_data.get(v) for k, v in self.backend_mappings.items()
             }
+            issuer = x509.load_pem_x509_certificate(data['ca_certificate'].encode(), default_backend())
+        else:
+            issuer = None
 
         cert = self.generate_builder(builder_data)
 
-        cert = self.add_extensions(cert, data.get('cert_extensions'), key)
+        cert = self.add_extensions(cert, data.get('cert_extensions'), key, issuer)
 
         cert = cert.sign(
             ca_key or key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend()
@@ -618,25 +649,28 @@ class CryptoKeyService(Service):
             builder_data['crypto_issuer_name'] = {
                 k: ca_data.get(v) for k, v in self.backend_mappings.items()
             }
+            issuer = x509.load_pem_x509_certificate(data['ca_certificate'].encode(), default_backend())
+        else:
+            issuer = None
 
         cert = self.generate_builder(builder_data)
 
         extension_data = data.get('cert_extensions')
-        if not extension_data.get('KeyUsage'):
+        if extension_data['KeyUsage']['enabled']:
             extension_data['KeyUsage'] = {
                 'key_cert_sign': True,
                 'crl_sign': True,
                 'extension_critical': True
             }
 
-        if not extension_data.get('BasicConstraints'):
+        if not extension_data['BasicConstraints']['enabled']:
             extension_data['BasicConstraints'] = {
                 'ca': True,
                 'path_length': 0 if ca_key else None,
                 'extension_critical': True
             }
 
-        cert = self.add_extensions(cert, data.get('cert_extensions'), key)
+        cert = self.add_extensions(cert, data.get('cert_extensions'), key, issuer)
 
         cert = cert.sign(ca_key or key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend())
 
@@ -657,7 +691,8 @@ class CryptoKeyService(Service):
             Str('csr', required=True),
             Str('csr_privatekey', required=True),
             Int('serial', required=True),
-            Str('digest_algorithm', default='SHA256')
+            Str('digest_algorithm', default='SHA256'),
+            Ref('cert_extensions')
         )
     )
     def sign_csr_with_ca(self, data):
@@ -676,9 +711,12 @@ class CryptoKeyService(Service):
             'san': self.normalize_san(csr_data.get('san'))
         })
 
-        new_cert = new_cert.public_key(
-            csr_key.public_key()
-        ).sign(
+        new_cert = self.add_extensions(
+            new_cert, data.get('cert_extensions'), csr_key,
+            x509.load_pem_x509_certificate(data['ca_certificate'], default_backend())
+        )
+
+        new_cert = new_cert.sign(
             ca_key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend()
         )
 
