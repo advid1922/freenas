@@ -1,7 +1,7 @@
 import subprocess
 
-from middlewared.service import SystemServiceService, private
-from middlewared.schema import accepts, Bool, Dict, Int, IPAddr, List, Str, ValidationErrors
+from middlewared.service import CallError, SystemServiceService, private
+from middlewared.schema import accepts, Bool, Dict, Int, IPAddr, Str, ValidationErrors
 from middlewared.validators import Port, Range
 
 
@@ -79,10 +79,19 @@ class OpenVPN:
             )
 
         other = 'openvpn.server' if mode == 'client' else 'openvpn.client'
-        other_config = await middleware.call(
-            f'{other}.config'
-        )
 
+        if not await OpenVPN.validate_bind_port(middleware, other, data):
+            verrors.add(
+                f'{schema}.nobind',
+                'Please enable this to concurrently run OpenVPN Server/Client on the same local port.'
+            )
+
+        return verrors
+
+    @staticmethod
+    async def validate_bind_port(middleware, other, data):
+        # Returns True if validation passes else False
+        other_config = await middleware.call(f'{other}.config')
         if (
             await middleware.call(
                 'service.started',
@@ -91,12 +100,9 @@ class OpenVPN:
                 not other_config['nobind'] or not data['nobind']
             )
         ):
-            verrors.add(
-                f'{schema}.nobind',
-                'Please enable this to concurrently run OpenVPN Server/Client on the same local port.'
-            )
-
-        return verrors
+            return False
+        else:
+            return True
 
 
 class OpenVPNServerService(SystemServiceService):
@@ -113,6 +119,20 @@ class OpenVPNServerService(SystemServiceService):
         data['server_certificate'] = None if not data['server_certificate'] else data['server_certificate']['id']
         data['root_ca'] = None if not data['root_ca'] else data['root_ca']['id']
         return data
+
+    @private
+    async def config_valid(self):
+        config = await self.config()
+        if not config['root_ca']:
+            raise CallError('Please configure root_ca first.')
+
+        if not config['server_certificate']:
+            raise CallError('Please configure server certificate first.')
+
+        if not await OpenVPN.validate_bind_port(self.middleware, 'openvpn.client', config):
+            raise CallError(
+                'Please enable "nobind" to concurrently run OpenVPN Server/Client on the same local port.'
+            )
 
     @accepts()
     async def digests(self):
