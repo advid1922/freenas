@@ -109,9 +109,6 @@ class OpenVPNServerService(SystemServiceService):
 
     @private
     async def validate(self, data, schema_name):
-        # Before validating, if `null` is provided for `root_ca`/`server_certificate`,
-        # let's setup the PKI first.
-
         verrors = await OpenVPN.common_validation(
             self.middleware, data, schema_name, 'server'
         )
@@ -124,10 +121,9 @@ class OpenVPNServerService(SystemServiceService):
             Bool('nobind'),
             Bool('tls_crypt_auth_enabled'),
             Int('netmask', validators=[Range(min=0, max=32)]),
-            Int('server_certificate', null=True),
-            Int('compression', null=True),
+            Int('server_certificate'),
             Int('port', validators=[Port()]),
-            Int('root_ca', null=True),
+            Int('root_ca'),
             IPAddr('server'),
             Str('additional_parameters'),
             Str('authentication_algorithm', enum=OpenVPN.digests(), null=True),
@@ -180,9 +176,8 @@ class OpenVPNClientService(SystemServiceService):
             'openvpn_client_update',
             Bool('nobind'),
             Bool('tls_crypt_auth_enabled'),
-            Int('client_certificate', null=True),
-            Int('compression', null=True),
-            Int('root_ca', null=True),
+            Int('client_certificate'),
+            Int('root_ca'),
             Int('port', validators=[Port()]),
             Int('remote_port', validators=[Port()]),
             Str('additional_parameters'),
