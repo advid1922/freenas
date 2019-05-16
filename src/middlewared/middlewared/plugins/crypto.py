@@ -656,21 +656,21 @@ class CryptoKeyService(Service):
         cert = self.generate_builder(builder_data)
 
         extension_data = data.get('cert_extensions')
-        if extension_data['KeyUsage']['enabled']:
-            extension_data['KeyUsage'] = {
+        if not extension_data['KeyUsage']['enabled']:
+            extension_data['KeyUsage'].update({
                 'key_cert_sign': True,
                 'crl_sign': True,
                 'extension_critical': True
-            }
+            })
 
         if not extension_data['BasicConstraints']['enabled']:
-            extension_data['BasicConstraints'] = {
+            extension_data['BasicConstraints'].update({
                 'ca': True,
                 'path_length': 0 if ca_key else None,
                 'extension_critical': True
-            }
+            })
 
-        cert = self.add_extensions(cert, data.get('cert_extensions'), key, issuer)
+        cert = self.add_extensions(cert, extension_data, key, issuer)
 
         cert = cert.sign(ca_key or key, getattr(hashes, data.get('digest_algorithm') or 'SHA256')(), default_backend())
 
@@ -713,7 +713,7 @@ class CryptoKeyService(Service):
 
         new_cert = self.add_extensions(
             new_cert, data.get('cert_extensions'), csr_key,
-            x509.load_pem_x509_certificate(data['ca_certificate'], default_backend())
+            x509.load_pem_x509_certificate(data['ca_certificate'].encode(), default_backend())
         )
 
         new_cert = new_cert.sign(
@@ -1409,6 +1409,14 @@ class CertificateService(CRUDService):
 
         job.set_progress(10, 'Initial validation complete')
 
+        if create_type in (
+            'CERTIFICATE_CREATE_IMPORTED_CSR',
+            'CERTIFICATE_CREATE_ACME',
+            'CERTIFICATE_CREATE_IMPORTED',
+            'CERTIFICATE_CREATE_CSR'
+        ):
+            data.pop('cert_extensions')
+
         if create_type == 'CERTIFICATE_CREATE_ACME':
             data = await self.middleware.run_in_thread(
                 self.map_functions[create_type],
@@ -1620,7 +1628,8 @@ class CertificateService(CRUDService):
         cert_info.update({
             'ca_privatekey': signing_cert['privatekey'],
             'ca_certificate': signing_cert['certificate'],
-            'serial': cert_serial
+            'serial': cert_serial,
+            'cert_extensions': data['cert_extensions']
         })
 
         cert, key = await self.middleware.call(
@@ -1998,6 +2007,7 @@ class CertificateAuthorityService(CRUDService):
             Int('ca_id', required=True),
             Int('csr_cert_id', required=True),
             Str('name', required=True),
+            Ref('cert_extensions'),
             register=True
         )
     )
@@ -2081,7 +2091,8 @@ class CertificateAuthorityService(CRUDService):
                 'csr': csr_cert_data['CSR'],
                 'csr_privatekey': csr_cert_data['privatekey'],
                 'serial': serial,
-                'digest_algorithm': ca_data['digest_algorithm']
+                'digest_algorithm': ca_data['digest_algorithm'],
+                'cert_extensions': data['cert_extensions']
             }
         )
 
@@ -2124,7 +2135,8 @@ class CertificateAuthorityService(CRUDService):
         cert_info.update({
             'ca_privatekey': signing_cert['privatekey'],
             'ca_certificate': signing_cert['certificate'],
-            'serial': serial
+            'serial': serial,
+            'cert_extensions': data['cert_extensions']
         })
 
         cert, key = await self.middleware.call(
@@ -2175,6 +2187,7 @@ class CertificateAuthorityService(CRUDService):
         cert_info = get_cert_info_from_data(data)
         cert_info['serial'] = random.getrandbits(24)
 
+        cert_info['cert_extensions'] = data['cert_extensions']
         (cert, key) = await self.middleware.call(
             'cryptokey.generate_self_signed_ca',
             cert_info
