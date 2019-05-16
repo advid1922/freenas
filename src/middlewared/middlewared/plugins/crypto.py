@@ -1811,6 +1811,31 @@ class CertificateAuthorityService(CRUDService):
         datastore_extend = 'certificate.cert_extend'
         datastore_prefix = 'cert_'
 
+    PROFILES = {
+        'openvpn_root_ca': {
+            'cert_extensions': {
+                'AuthorityKeyIdentifier': {
+                    'enabled': True,
+                    'authority_cert_issuer': True,
+                    'extension_critical': False
+                },
+                'KeyUsage': {
+                    'enabled': True,
+                    'key_cert_sign': True,
+                    'crl_sign': True
+                },
+                'BasicConstraints': {
+                    'enabled': True,
+                    'ca': True
+                }
+            },
+            'key_length': 2048,
+            'key_type': 'RSA',
+            'lifetime': 3650,
+            'digest_algorithm': 'SHA256'
+        }
+    }
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.map_create_functions = {
@@ -1818,6 +1843,10 @@ class CertificateAuthorityService(CRUDService):
             'CA_CREATE_IMPORTED': self.__create_imported_ca,
             'CA_CREATE_INTERMEDIATE': self.__create_intermediate_ca,
         }
+
+    @accepts()
+    async def profiles(self):
+        return self.PROFILES
 
     # HELPER METHODS
 
