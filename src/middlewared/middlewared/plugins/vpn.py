@@ -222,6 +222,23 @@ class OpenVPNClientService(SystemServiceService):
 
         verrors.check()
 
+    @private
+    async def config_valid(self):
+        config = await self.config()
+        if not config['root_ca']:
+            raise CallError('Please configure root_ca first.')
+
+        if not config['client_certificate']:
+            raise CallError('Please configure client certificate first.')
+
+        if not config['remote']:
+            raise CallError('Please configure remote first.')
+
+        if not await OpenVPN.validate_bind_port(self.middleware, 'openvpn.server', config):
+            raise CallError(
+                'Please enable "nobind" to concurrently run OpenVPN Server/Client on the same local port.'
+            )
+
     @accepts(
         Dict(
             'openvpn_client_update',
@@ -243,6 +260,7 @@ class OpenVPNClientService(SystemServiceService):
         )
     )
     async def do_update(self, data):
+        # TODO: Complete tls_crypt_auth for client/server please
         old_config = await self.config()
         config = old_config.copy()
 
