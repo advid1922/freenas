@@ -128,6 +128,7 @@ def services_config(middleware, context):
         's3': ['minio'],
         'netdata': ['netdata'],
         'nfs': ['nfs_server', 'rpc_lockd', 'rpc_statd', 'mountd', 'nfsd', 'rpcbind'],
+        'openvpn_client': ['openvpn_client'],
         'openvpn_server': ['openvpn_server'],
         'rsync': ['rsyncd'],
         'snmp': ['snmpd', 'snmp_agent'],
@@ -293,6 +294,11 @@ def openvpn_server_config(middleware, context):
     yield 'openvpn_server_dir="/etc/local/openvpn/server"'
 
 
+def openvpn_client_config(middleware, context):
+    yield 'openvpn_client_configfile="/etc/local/openvpn/client/openvpn_client.conf"'
+    yield 'openvpn_client_dir="/etc/local/openvpn/client"'
+
+
 def powerd_config(middleware, context):
     value = 'YES' if middleware.call_sync('system.advanced.config')['powerdaemon'] else 'NO'
     yield f'powerd_enable="{value}"'
@@ -442,6 +448,7 @@ def render(service, middleware):
         nfs_config,
         nis_config,
         nut_config,
+        openvpn_client_config,
         openvpn_server_config,
         powerd_config,
         s3_config,
