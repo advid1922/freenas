@@ -1,3 +1,4 @@
+import os
 import subprocess
 
 from middlewared.service import CallError, SystemServiceService, private
@@ -252,3 +253,9 @@ class OpenVPNClientService(SystemServiceService):
         await self._update_service(old_config, config)
 
         return await self.config()
+
+
+def setup(middleware):
+    for srv in ('openvpn_client', 'openvpn_server'):
+        if not os.path.exists(f'/etc/local/rc.d/{srv}'):
+            os.symlink('/etc/local/rc.d/openvpn', f'/etc/local/rc.d/{srv}')
