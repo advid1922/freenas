@@ -2006,6 +2006,11 @@ class CertificateAuthorityService(CRUDService):
     async def profiles(self):
         return self.PROFILES
 
+    @periodic(86400, run_on_start=True)
+    @private
+    async def crl_generation(self):
+        await self.middleware.call('service.start', 'ssl')
+
     # HELPER METHODS
 
     @private
