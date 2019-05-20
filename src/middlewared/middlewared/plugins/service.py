@@ -390,6 +390,7 @@ class ServiceService(CRUDService):
 
     async def _start_openvpn_server(self, **kwargs):
         kwargs.setdefault('onetime', True)
+        await self.middleware.call('etc.generate', 'ssl')
         await self.middleware.call('etc.generate', 'openvpn_server')
         await self._service('openvpn_server', 'start', **kwargs)
 
@@ -673,6 +674,8 @@ class ServiceService(CRUDService):
 
     async def _start_ssl(self, **kwargs):
         await self.middleware.call('etc.generate', 'ssl')
+        if await self.started('openvpn_server'):
+            await self.middleware.call('etc.generate', 'openvpn_server')
 
     async def _start_s3(self, **kwargs):
         await self.middleware.call('etc.generate', 's3')
